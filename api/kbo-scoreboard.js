@@ -1,3 +1,18 @@
+// api/kbo-scoreboard.js
+// -----------------------------------------------------------------------
+// KBO 공식 사이트(koreabaseball.com)의 스코어보드 페이지를 서버에서 대신
+// 가져와 파싱한 뒤, 팀 이름으로 오늘 경기 하나를 찾아 JSON으로 돌려줍니다.
+//
+// 실제 페이지 구조 확인 결과 (2026-07 기준): 경기마다 <div class="smsScore">
+// 안에 원정팀(.leftTeam .teamT)/홈팀(.rightTeam .teamT)/점수(.score)/
+// 상태(.flag)가 들어있어요. "리뷰" 링크(gameId 포함)는 경기가 끝나야만
+// 생기는 것으로 보여서, 진행 중인 경기를 확실히 찾기 위해 gameId 대신
+// 팀 이름으로 매칭합니다.
+//
+// 사용법: GET /api/kbo-scoreboard?team=삼성  (팀 이름 일부만 넣어도 됨)
+// 응답: { awayTeam, homeTeam, awayScore, homeScore, status, place }
+// -----------------------------------------------------------------------
+
 import * as cheerio from 'cheerio';
 
 const SCOREBOARD_URL = 'https://www.koreabaseball.com/Schedule/ScoreBoard.aspx';
@@ -11,9 +26,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const gameId = req.query.gameId;
-  if (!gameId) {
-    res.status(400).json({ error: 'gameId 쿼리 파라미터가 필요합니다. 예: ?gameId=20260705OBWO0' });
+  const team = (req.query.team || '').trim();
+  if (!team) {
+    res.status(400).json({ error: 'team 쿼리 파라미터가 필요합니다. 예: ?team=삼성' });
     return;
   }
 
@@ -24,60 +39,30 @@ export default async function handler(req, res) {
     const html = await pageRes.text();
     const $ = cheerio.load(html);
 
-    const gameLinks = $('a[href*="gameId="]')
-      .map((i, el) => $(el).attr('href') || '')
-      .get()
-      .filter(href => /gameId=/.test(href));
-
-    const strongs = $('strong').map((i, el) => $(el).text().trim()).get();
-    const ems = $('em').map((i, el) => $(el).text().trim()).get();
-
     const games = [];
-    if (strongs.length === gameLinks.length * 3 && ems.length === gameLinks.length * 2) {
-      gameLinks.forEach((href, i) => {
-        const idMatch = href.match(/gameId=([0-9A-Za-z]+)/);
-        const dateMatch = href.match(/gameDate=(\d+)/);
-        games.push({
-          gameId: idMatch ? idMatch[1] : null,
-          gameDate: dateMatch ? dateMatch[1] : null,
-          awayTeam: strongs[i * 3] || null,
-          status: strongs[i * 3 + 1] || null,
-          homeTeam: strongs[i * 3 + 2] || null,
-          awayScore: ems[i * 2] || null,
-          homeScore: ems[i * 2 + 1] || null
-        });
-      });
-    }
+    $('.smsScore').each((i, el) => {
+      const $el = $(el);
+      const awayTeam = $el.find('.leftTeam .teamT').first().text().trim();
+      const homeTeam = $el.find('.rightTeam .teamT').first().text().trim();
+      const awayScore = $el.find('.leftTeam .score').first().text().trim();
+      const homeScore = $el.find('.rightTeam .score').first().text().trim();
+      const status = $el.find('.flag').first().text().trim();
+      const place = $el.find('.place').first().text().trim();
+      if (awayTeam || homeTeam) {
+        games.push({ awayTeam, homeTeam, awayScore, homeScore, status, place });
+      }
+    });
 
     if (!games.length) {
-      $('input[type="hidden"]').remove();
-      $('script').remove();
-      $('style').remove();
-      $('link').remove();
-      $('meta').remove();
-
-      let sample = '';
-      const firstEm = $('em').first();
-      if (firstEm.length) {
-        let node = firstEm;
-        for (let i = 0; i < 6 && node.parent().length; i++) node = node.parent();
-        sample = $.html(node);
-      }
-      if (!sample) sample = $('body').html() || '';
-
-      res.status(502).json({
-        error: 'KBO 페이지 구조가 예상과 달라 파싱하지 못했어요.',
-        debug: { gameLinkCount: gameLinks.length, strongCount: strongs.length, emCount: ems.length },
-        htmlSample: sample.slice(0, 6000)
-      });
+      res.status(502).json({ error: '오늘 경기 목록을 찾지 못했어요. (사이트 구조가 또 바뀌었을 수 있어요)' });
       return;
     }
 
-    const found = games.find(g => g.gameId === gameId);
+    const found = games.find(g => g.awayTeam.includes(team) || g.homeTeam.includes(team));
     if (!found) {
       res.status(404).json({
-        error: '오늘 경기 목록에서 해당 gameId를 찾지 못했어요.',
-        availableGameIds: games.map(g => g.gameId)
+        error: `"${team}" 팀이 포함된 오늘 경기를 찾지 못했어요.`,
+        availableGames: games.map(g => `${g.awayTeam} vs ${g.homeTeam}`)
       });
       return;
     }
