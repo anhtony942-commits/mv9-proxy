@@ -50,11 +50,25 @@ export default async function handler(req, res) {
     }
 
     if (!games.length) {
-      const bodyHtml = $('body').html() || '';
+      $('input[type="hidden"]').remove();
+      $('script').remove();
+      $('style').remove();
+      $('link').remove();
+      $('meta').remove();
+
+      let sample = '';
+      const firstEm = $('em').first();
+      if (firstEm.length) {
+        let node = firstEm;
+        for (let i = 0; i < 6 && node.parent().length; i++) node = node.parent();
+        sample = $.html(node);
+      }
+      if (!sample) sample = $('body').html() || '';
+
       res.status(502).json({
         error: 'KBO 페이지 구조가 예상과 달라 파싱하지 못했어요.',
         debug: { gameLinkCount: gameLinks.length, strongCount: strongs.length, emCount: ems.length },
-        htmlSample: bodyHtml.slice(0, 6000)
+        htmlSample: sample.slice(0, 6000)
       });
       return;
     }
